@@ -1,22 +1,23 @@
 """Streamlit web UI.  Run with:  streamlit run app.py"""
 
+import os
 from pathlib import Path
 
 import anthropic
 import streamlit as st
 
-from t2s import Database, TextToSQLAgent
+from t2s import TextToSQLAgent, open_database
 
-DB_PATH = Path(__file__).parent / "data" / "chinook.db"
+DB_TARGET = os.environ.get("T2S_DB", str(Path(__file__).parent / "data" / "chinook.db"))
 
 st.set_page_config(page_title="Text-to-SQL Agent", layout="wide")
 st.title("Text-to-SQL Agent")
-st.caption("Ask a question about the Chinook music-store database. The agent explores the schema, tests queries and answers.")
+st.caption("Ask a question about your data in plain English. The agent explores the schema, tests read-only queries and answers.")
 
 
 @st.cache_resource
 def get_agent(effort: str) -> TextToSQLAgent:
-    return TextToSQLAgent(Database(DB_PATH), effort=effort)
+    return TextToSQLAgent(open_database(DB_TARGET, schema=os.environ.get("T2S_SCHEMA")), effort=effort)
 
 
 with st.sidebar:

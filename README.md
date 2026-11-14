@@ -1,6 +1,6 @@
 # Text-to-SQL Agent
 
-Ask questions about a database in plain English. The agent explores the schema, writes SQL, runs it, fixes its own mistakes, and answers with both the result and the query it used.
+Ask questions about a database in plain English, from the terminal, a web UI or **Slack**. Works with **PostgreSQL, MySQL/MariaDB and SQLite**. The agent explores the schema, writes SQL, runs it, fixes its own mistakes, and answers with both the result and the query it used.
 
 ```
 $ python -m t2s "Which sales agent brought in the most revenue?"
@@ -38,13 +38,16 @@ The loop is in [`t2s/agent.py`](t2s/agent.py) (~150 lines). It's written by hand
 
 ## Safety
 
-Model-written SQL is untrusted input, so three independent layers guard it ([`t2s/db.py`](t2s/db.py)):
+Model-written SQL is untrusted input, so independent layers guard it ([`t2s/db.py`](t2s/db.py), [`t2s/sqldb.py`](t2s/sqldb.py)):
 
-| Layer | What it does |
-|---|---|
-| Read-only connection | SQLite opened with `mode=ro` and `PRAGMA query_only`. The engine refuses writes even if everything else fails. |
-| Query validator | Only a single `SELECT`/`WITH` statement. Rejects `DELETE`, `DROP`, `ATTACH`, `PRAGMA`, stacked statements (`;`), etc. String literals and comments are stripped first, so `WHERE name = 'drop; it'` isn't a false positive. |
-| Resource limits | 5 s timeout per query (SQLite progress handler) and a row cap, so a runaway query can't hang the app or flood the context. |
+| Layer | SQLite | PostgreSQL / MySQL |
+|---|---|---|
+| Database login | n/a | Use a login with **SELECT grants only** (setup below). This is the real guarantee. |
+| Read-only session | `mode=ro` + `PRAGMA query_only` | `default_transaction_read_only = on` / `SET SESSION TRANSACTION READ ONLY` on every pooled connection. Writes fail even if the login has write grants (tested). |
+| Query validator | Single `SELECT`/`WITH` only; rejects `DELETE`, `DROP`, `PRAGMA`, stacked `;` ... | Same, plus clauses that write files, lock rows or leave the DB inside a SELECT: `INTO OUTFILE`, `SELECT INTO`, `FOR UPDATE`, `pg_read_file`, `LOAD_FILE`, `dblink`, `set_config`, `nextval`, `pg_sleep` ... |
+| Resource limits | 5 s timeout (progress handler), row cap | 5 s server-side `statement_timeout` / `max_execution_time`, row cap |
+
+String literals and comments are stripped before validation, so `WHERE name = 'drop; it'` isn't a false positive.
 
 ## Quick start
 
@@ -65,6 +68,65 @@ python -m t2s "Which 5 artists have the most albums?"
 python -m t2s                                # interactive mode
 python -m t2s --db path/to/your.db "..."     # any SQLite database
 python -m t2s --effort low "..."             # cheaper/faster
+```
+
+**Your own PostgreSQL / MySQL database**
+
+```bash
+python -m t2s --db "postgresql+psycopg://analyst:PASSWORD@host:5432/shop" "revenue by month this year"
+python -m t2s --db "mysql+pymysql://analyst:PASSWORD@host:3306/shop" "top 10 customers by lifetime value"
+export T2S_DB="postgresql+psycopg://..."     # or set it once for the CLI, web UI and Slack bot
+```
+
+Create a read-only login first:
+
+```sql
+-- PostgreSQL
+CREATE ROLE analyst LOGIN PASSWORD '...';
+GRANT CONNECT ON DATABASE shop TO analyst;
+GRANT USAGE ON SCHEMA public TO analyst;
+GRANT SELECT ON ALL TABLES IN SCHEMA public TO analyst;
+ALTER ROLE analyst SET default_transaction_read_only = on;
+
+-- MySQL
+CREATE USER 'analyst'@'%' IDENTIFIED BY '...';
+GRANT SELECT ON shop.* TO 'analyst'@'%';
+```
+
+Point it at a read replica if there is one, so analytics questions never compete with production traffic.
+
+**Demo Postgres in Docker**
+
+```bash
+python scripts/download_chinook.py --postgres
+docker compose up -d
+python -m t2s --db postgresql+psycopg://analyst:analyst@localhost:5433/chinook "top 5 genres by revenue"
+```
+
+**Slack bot**
+
+Mention the bot in a channel or DM it. It replies in a thread with the answer, a result table and the SQL it ran.
+
+```
+@data which 3 countries have spent the most?
+
+  The USA has spent the most ($523.06), then Canada ($303.96) and France ($195.10).
+  country  total
+  -------  ------
+  USA      523.06
+  Canada   303.96
+  France   195.10
+  SQL used: SELECT billing_country AS country, SUM(total) AS total FROM invoice ...
+```
+
+1. [api.slack.com/apps](https://api.slack.com/apps) → *Create New App* → *From a manifest* → paste [`slack_manifest.yml`](slack_manifest.yml).
+2. Install it to the workspace (copy the `xoxb-` bot token), then under *Basic Information* create an app-level token with `connections:write` (`xapp-`).
+3. Run it. Socket Mode means no public URL or open port is needed.
+
+```bash
+export SLACK_BOT_TOKEN=xoxb-... SLACK_APP_TOKEN=xapp-... ANTHROPIC_API_KEY=sk-ant-...
+export T2S_DB="postgresql+psycopg://analyst:...@host/shop"
+python -m t2s.slack_bot
 ```
 
 **Web UI**
@@ -95,7 +157,14 @@ Results are saved to `evals/results/` with per-question SQL, answers, tool-call 
 pytest
 ```
 
-29 tests, no API key needed: the safety guard (allowed vs blocked queries, read-only enforcement, timeout, row cap), the result comparison, and the agent loop driven by a scripted fake client (error recovery, blocked writes, turn limit, refusal handling, request shape).
+No API key needed: the safety guard (allowed vs blocked queries, read-only enforcement, timeout, row cap), the result comparison, Slack message rendering, and the agent loop driven by a scripted fake client (error recovery, blocked writes, turn limit, refusal handling, request shape).
+
+PostgreSQL / MySQL tests run against real servers when given a URL with a **write-capable** user, to prove the session-level read-only mode blocks writes on its own (CI runs both):
+
+```bash
+T2S_TEST_PG_URL=postgresql+psycopg://rw:rw@localhost:5433/chinook \
+T2S_TEST_MYSQL_URL=mysql+pymysql://rw:rw@localhost:3306/Chinook pytest
+```
 
 ## Project layout
 
@@ -103,10 +172,14 @@ pytest
 t2s/
   agent.py      agent loop, system prompt
   tools.py      tool schemas + dispatch
-  db.py         read-only DB access, SQL guard, limits
+  db.py         SQLite access, SQL guard, limits
+  sqldb.py      PostgreSQL / MySQL access (SQLAlchemy), same interface
+  slack_bot.py  Slack bot (Socket Mode)
   compare.py    execution-accuracy result matching
   __main__.py   CLI
 app.py          Streamlit UI
+docker-compose.yml  demo Postgres with Chinook + read-only login
+slack_manifest.yml  one-paste Slack app setup
 evals/          questions + eval runner
 tests/          offline unit tests
 ```
@@ -120,7 +193,9 @@ tests/          offline unit tests
 
 ## Roadmap
 
-- [ ] MySQL / PostgreSQL support (read-only user + `SET SESSION TRANSACTION READ ONLY`)
+- [x] MySQL / PostgreSQL support (read-only user + read-only session)
+- [x] Slack bot
+- [ ] Business glossary (e.g. "active customer" = ordered in last 90 days) injected into the prompt
 - [ ] Schema retrieval (embeddings) for databases with hundreds of tables
 - [ ] Larger benchmark (Spider / BIRD dev subset)
 - [ ] Charts for numeric results

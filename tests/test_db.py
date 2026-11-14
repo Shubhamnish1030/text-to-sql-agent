@@ -12,6 +12,8 @@ from t2s.db import UnsafeQueryError, check_read_only, format_result
     "SELECT 'drop table x; delete' AS s",          # keywords inside a string are fine
     "SELECT LastName -- update comment\nFROM Customer",
     "SELECT replace(Name, 'a', 'b') FROM Artist",  # replace() function is allowed
+    "SELECT Name FROM Artist ORDER BY Name OFFSET 5",  # 'set' inside 'offset' is fine
+    "SELECT 'for update' AS note",
 ])
 def test_allows_read_only(sql):
     assert check_read_only(sql)
@@ -27,6 +29,17 @@ def test_allows_read_only(sql):
     "PRAGMA table_info(Track)",
     "ATTACH DATABASE 'x.db' AS x",
     "WITH x AS (SELECT 1) DELETE FROM Track",
+    # Postgres / MySQL: writes, locks and file access hidden inside a SELECT
+    "SELECT * INTO new_table FROM Track",
+    "SELECT * FROM Track INTO OUTFILE '/tmp/x.csv'",
+    "SELECT * FROM Track FOR UPDATE",
+    "SELECT * FROM Track FOR NO KEY UPDATE",
+    "SELECT pg_read_file('/etc/passwd')",
+    "SELECT LOAD_FILE('/etc/passwd')",
+    "SELECT set_config('default_transaction_read_only', 'off', false)",
+    "SELECT nextval('orders_id_seq')",
+    "SELECT pg_sleep(60)",
+    "SELECT * FROM dblink('host=x', 'DELETE FROM t') AS t(a int)",
 ])
 def test_blocks_unsafe(sql):
     with pytest.raises(UnsafeQueryError):

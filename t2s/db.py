@@ -22,7 +22,14 @@ DEFAULT_TIMEOUT_S = 5.0
 
 _FORBIDDEN = re.compile(
     r"\b(insert|update|delete|drop|alter|create|attach|detach|pragma|vacuum|"
-    r"reindex|truncate|grant|revoke|begin|commit|rollback|savepoint)\b",
+    r"reindex|truncate|grant|revoke|begin|commit|rollback|savepoint|"
+    # Clauses/functions that write files, take locks, change settings or reach
+    # outside the database even inside a SELECT (Postgres / MySQL).
+    r"into|outfile|dumpfile|load_file|copy|set|lock|call|exec|execute|handler|"
+    r"pg_read_file|pg_read_binary_file|pg_ls_dir|pg_stat_file|lo_import|lo_export|"
+    r"dblink|dblink_exec|set_config|setval|nextval|pg_terminate_backend|"
+    r"pg_cancel_backend|pg_sleep|sleep|benchmark)\b"
+    r"|\bfor\s+(?:update|share|no\s+key\s+update|key\s+share)\b",
     re.IGNORECASE,
 )
 
@@ -51,7 +58,8 @@ def check_read_only(sql: str) -> str:
         raise UnsafeQueryError("Only SELECT (or WITH ... SELECT) queries are allowed.")
     match = _FORBIDDEN.search(scan)
     if match:
-        raise UnsafeQueryError(f"Keyword '{match.group(1).upper()}' is not allowed.")
+        word = (match.group(1) or match.group(0)).upper()
+        raise UnsafeQueryError(f"Keyword '{' '.join(word.split())}' is not allowed.")
     return cleaned
 
 
@@ -66,6 +74,9 @@ class QueryResult:
 class Database:
     """A read-only handle on a SQLite database file."""
 
+    dialect = "sqlite"
+    dialect_label = "SQLite"
+
     def __init__(self, path: str | Path, timeout_s: float = DEFAULT_TIMEOUT_S):
         path = Path(path).resolve()
         if not path.exists():
@@ -74,6 +85,10 @@ class Database:
         self.timeout_s = timeout_s
         self.conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True, check_same_thread=False)
         self.conn.execute("PRAGMA query_only = ON")
+
+    @property
+    def label(self) -> str:
+        return self.path.name
 
     def close(self) -> None:
         self.conn.close()

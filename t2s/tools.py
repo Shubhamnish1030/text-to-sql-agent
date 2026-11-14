@@ -51,7 +51,7 @@ TOOLS: list[dict[str, Any]] = [
     {
         "name": "run_query",
         "description": (
-            "Run one read-only SQLite SELECT query and see the result (up to 50 rows shown). "
+            "Run one read-only SELECT query and see the result (up to 50 rows shown). "
             "Use it to test and refine queries. Writes are blocked."
         ),
         "strict": True,

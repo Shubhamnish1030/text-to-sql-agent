@@ -3,11 +3,37 @@ on: [push, pull_request]
 jobs:
   test:
     runs-on: ubuntu-latest
+    services:
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_ROOT_PASSWORD: root
+        ports: ["3306:3306"]
+        options: --health-cmd="mysqladmin ping -proot" --health-interval=5s --health-retries=20
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports: ["5432:5432"]
+        options: --health-cmd=pg_isready --health-interval=5s --health-retries=20
+    env:
+      T2S_TEST_MYSQL_URL: mysql+pymysql://rw:rw@127.0.0.1:3306/Chinook
+      T2S_TEST_PG_URL: postgresql+psycopg://rw:rw@127.0.0.1:5432/chinook
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: pip install anthropic pytest
+      - run: pip install -r requirements.txt
       - run: python scripts/download_chinook.py
+      - name: Seed MySQL and Postgres with Chinook
+        run: |
+          base=https://raw.githubusercontent.com/lerocha/chinook-database/master/ChinookDatabase/DataSources
+          curl -sSfL -o my.sql $base/Chinook_MySql.sql
+          curl -sSfL -o pg.sql $base/Chinook_PostgreSql.sql
+          mysql -h127.0.0.1 -uroot -proot < my.sql
+          mysql -h127.0.0.1 -uroot -proot -e "CREATE USER 'rw'@'%' IDENTIFIED BY 'rw'; GRANT ALL ON Chinook.* TO 'rw'@'%';"
+          export PGPASSWORD=postgres
+          psql -h 127.0.0.1 -U postgres -v ON_ERROR_STOP=1 -f pg.sql > /dev/null
+          psql -h 127.0.0.1 -U postgres -d chinook -c "CREATE ROLE rw LOGIN PASSWORD 'rw'; GRANT USAGE ON SCHEMA public TO rw; GRANT ALL ON ALL TABLES IN SCHEMA public TO rw;"
       - run: pytest -q

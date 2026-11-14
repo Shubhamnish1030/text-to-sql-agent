@@ -1,0 +1,18 @@
+# Demo Postgres with the Chinook data and a read-only "analyst" login.
+#   python scripts/download_chinook.py --postgres
+#   docker compose up -d
+#   python -m t2s --db postgresql+psycopg://analyst:analyst@localhost:5433/chinook "top 5 genres by revenue"
+services:
+  postgres:
+    image: postgres:17
+    environment:
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5433:5432"
+    volumes:
+      - ./data/chinook_pg.sql:/docker-entrypoint-initdb.d/00-chinook.sql:ro
+      - ./docker/10-readonly-role.sh:/docker-entrypoint-initdb.d/10-readonly-role.sh:ro
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "postgres", "-d", "chinook"]
+      interval: 2s
+      retries: 30

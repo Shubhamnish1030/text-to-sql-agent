@@ -7,3 +7,4 @@ data/*.part
 evals/results/
 .env
 .DS_Store
+data/*.sql

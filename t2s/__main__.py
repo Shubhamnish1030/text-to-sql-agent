@@ -7,13 +7,15 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from pathlib import Path
 
 import anthropic
 
 from .agent import DEFAULT_MODEL, AgentResult, Step, TextToSQLAgent
-from .db import Database, format_result
+from .db import format_result
+from .sqldb import open_database
 
 DEFAULT_DB = Path(__file__).resolve().parent.parent / "data" / "chinook.db"
 
@@ -40,15 +42,21 @@ def _print_result(res: AgentResult) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
-    p = argparse.ArgumentParser(prog="t2s", description="Ask questions about a SQLite database.")
+    p = argparse.ArgumentParser(prog="t2s", description="Ask questions about a SQLite, PostgreSQL or MySQL database.")
     p.add_argument("question", nargs="*", help="Question to ask (omit for interactive mode).")
-    p.add_argument("--db", default=str(DEFAULT_DB), help="Path to a SQLite database file.")
+    p.add_argument(
+        "--db",
+        default=os.environ.get("T2S_DB", str(DEFAULT_DB)),
+        help="SQLite file path, or a URL like postgresql+psycopg://user:pw@host/db or "
+        "mysql+pymysql://user:pw@host/db (default: $T2S_DB or the Chinook demo).",
+    )
+    p.add_argument("--schema", default=None, help="Postgres schema / MySQL database to explore.")
     p.add_argument("--model", default=DEFAULT_MODEL)
     p.add_argument("--effort", default="medium", choices=["low", "medium", "high", "xhigh", "max"])
     p.add_argument("--quiet", action="store_true", help="Don't print the agent's tool calls.")
     args = p.parse_args(argv)
 
-    db = Database(args.db)
+    db = open_database(args.db, schema=args.schema)
     agent = TextToSQLAgent(db, model=args.model, effort=args.effort)
     on_step = None if args.quiet else _print_step
 
@@ -68,7 +76,7 @@ def main(argv: list[str] | None = None) -> int:
         ask(" ".join(args.question))
         return 0
 
-    print(f"Connected to {db.path.name}. Ask a question (Ctrl-D to quit).")
+    print(f"Connected to {db.label}. Ask a question (Ctrl-D to quit).")
     while True:
         try:
             q = input("\n? ").strip()

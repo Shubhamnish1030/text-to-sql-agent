@@ -12,7 +12,7 @@ from typing import Any, Callable
 
 import anthropic
 
-from .db import Database, QueryResult
+from .db import QueryResult
 from .tools import TOOLS, ToolError, describe_call, execute_tool
 
 DEFAULT_MODEL = "claude-opus-5-5"
@@ -20,7 +20,7 @@ DEFAULT_MODEL = "claude-opus-5-5"
 # model server-side instead of returning a refusal.
 FALLBACK_BETA = "server-side-fallback-2026-07-01"
 
-SYSTEM_PROMPT = """You answer questions about data by writing SQLite queries against a read-only database.
+SYSTEM_PROMPT_TEMPLATE = """You answer questions about data by writing {dialect} queries against a read-only database.
 
 How to work:
 1. Explore before writing SQL: list the tables, describe the ones that look relevant, and sample rows when value formats matter (dates, IDs, text casing).
@@ -28,11 +28,18 @@ How to work:
 3. Finish by calling final_answer with the query and a short plain-language answer that quotes the key numbers from the result.
 
 Query rules:
-- SQLite dialect only. Use explicit JOINs on the foreign keys you have seen.
+- {dialect} dialect only. Use explicit JOINs on the foreign keys you have seen.
 - Return only the columns the question needs, with readable aliases.
 - For "top N" questions use ORDER BY ... LIMIT N. Round money to 2 decimals.
 - If the question is ambiguous, pick the most reasonable reading and say which one you chose in the answer.
 - If the data cannot answer the question, say so in final_answer and use a query that shows why."""
+
+
+def system_prompt(dialect_label: str = "SQLite") -> str:
+    return SYSTEM_PROMPT_TEMPLATE.format(dialect=dialect_label)
+
+
+SYSTEM_PROMPT = system_prompt()
 
 
 @dataclass
@@ -62,7 +69,7 @@ class AgentResult:
 class TextToSQLAgent:
     def __init__(
         self,
-        db: Database,
+        db,  # Database (SQLite) or ServerDatabase (Postgres/MySQL)
         client: anthropic.Anthropic | None = None,
         model: str = DEFAULT_MODEL,
         effort: str = "medium",
@@ -73,12 +80,13 @@ class TextToSQLAgent:
         self.model = model
         self.effort = effort
         self.max_turns = max_turns
+        self.system = system_prompt(getattr(db, "dialect_label", "SQLite"))
 
     def _call_model(self, messages: list[dict[str, Any]]):
         return self.client.beta.messages.create(
             model=self.model,
             max_tokens=16000,
-            system=SYSTEM_PROMPT,
+            system=self.system,
             tools=TOOLS,
             messages=messages,
             thinking={"type": "adaptive"},
